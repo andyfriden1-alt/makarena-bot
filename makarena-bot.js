@@ -34,8 +34,10 @@ Object.keys(dungeonCooldowns).forEach(d => {
 });
 
 let cooldowns = new Map();
-let selectedDungeon = new Map(); // stores ONLY base (20,30...)
-let selectedGroup = new Map();   // stores group (1,2,3)
+let selectedDungeon = new Map();
+let selectedGroup = new Map();
+
+let botMessageId = null; // 🔥 store message ID
 
 // ===== COOLDOWN =====
 function hasCooldown(userId, dungeon) {
@@ -95,13 +97,26 @@ function buildEmbeds() {
       const data = dungeons[key];
       const group = key.split("-")[1];
 
-      let preview = data.lfg.slice(0, 2).map(p =>
-        `${icons[p.role]} ${p.name}`
-      ).join("\n") || "—";
+      // 👥 TEAM DISPLAY
+      let teamsText = data.teams.map((team, i) => {
+        return `**Team ${i+1}**\n` + Object.values(team)
+          .map(p => `${icons[p.role]} ${p.name}`)
+          .join("\n");
+      }).join("\n\n");
+
+      // 🔍 LFG DISPLAY (ALL USERS)
+      let preview = data.lfg.length > 0
+        ? data.lfg.map(p => `${icons[p.role]} ${p.name}`).join("\n")
+        : "—";
 
       fields.push({
         name: `Group ${group}`,
-        value: `👥 ${data.teams.length}\n🔍 ${data.lfg.length}\n${preview}`,
+        value:
+          `👥 Teams: ${data.teams.length}\n` +
+          `🔍 Queue: ${data.lfg.length}\n\n` +
+          (teamsText || "") +
+          (teamsText ? "\n\n" : "") +
+          preview,
         inline: true
       });
     });
@@ -158,11 +173,15 @@ client.once("clientReady", () => {
 client.on("interactionCreate", async interaction => {
   try {
 
+    // COMMAND
     if (interaction.isChatInputCommand() && interaction.commandName === "makarena") {
-      await interaction.reply({
+      const msg = await interaction.reply({
         embeds: buildEmbeds(),
-        components: getComponents()
+        components: getComponents(),
+        fetchReply: true
       });
+
+      botMessageId = msg.id; // 🔥 save message
     }
 
     // SELECT DUNGEON
@@ -193,7 +212,7 @@ client.on("interactionCreate", async interaction => {
         if (hasCooldown(userId, key)) {
           return interaction.reply({ content:"Cooldown active", ephemeral:true });
         }
-        return interaction.reply({ content:"Select role", ephemeral:true });
+        return interaction.reply({ content:"Now pick your role below 👇", ephemeral:true });
       }
 
       if (interaction.customId === "leave") {
@@ -202,7 +221,7 @@ client.on("interactionCreate", async interaction => {
       }
     }
 
-    // ROLE
+    // ROLE SELECT
     if (interaction.isStringSelectMenu() && interaction.customId === "role") {
       const userId = interaction.user.id;
       const dungeon = selectedDungeon.get(userId);
@@ -230,14 +249,9 @@ client.on("interactionCreate", async interaction => {
       await interaction.reply({ content:`Joined Dungeon ${dungeon} Group ${group}`, ephemeral:true });
     }
 
-    // UPDATE
-    if (interaction.channel) {
-      const messages = await interaction.channel.messages.fetch({ limit: 10 });
-
-      const botMsg = messages.find(m =>
-        m.author.id === client.user.id &&
-        m.embeds.length > 0
-      );
+    // 🔄 UPDATE MESSAGE (RELIABLE)
+    if (interaction.channel && botMessageId) {
+      const botMsg = await interaction.channel.messages.fetch(botMessageId);
 
       if (botMsg) {
         await botMsg.edit({

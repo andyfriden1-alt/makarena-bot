@@ -132,6 +132,10 @@ function getGroupSize(session, key) {
   return Object.keys(session[key].team).length;
 }
 
+function isGroupFull(session, key) {
+  return getGroupSize(session, key) === MAX_PLAYERS;
+}
+
 function getMemberSafe(guild, id) {
   return guild.members.cache.get(id) || null;
 }
@@ -160,8 +164,10 @@ async function ensurePresenceForUser(guild, userId) {
   return getPresenceSafe(guild, userId);
 }
 
-function removeUserFromSession(session, userId) {
+function removeUserFromDungeon(session, userId, dungeon) {
   for (const sessionKey in session) {
+    if (sessionKey.split("-")[0] !== dungeon) continue;
+
     for (const role of ROLE_ORDER) {
       if (session[sessionKey].team[role]?.id === userId) {
         delete session[sessionKey].team[role];
@@ -292,8 +298,10 @@ async function buildEmbeds(session, guild) {
       }
 
       fields.push({
-        name: `Group ${group} (${getGroupSize(session, key)}/4)`,
-        value: `**Party**\n${partyLines.join("\n")}`,
+        name: isGroupFull(session, key)
+          ? `Group ${group} (${getGroupSize(session, key)}/4) - FULL`
+          : `Group ${group} (${getGroupSize(session, key)}/4)`,
+        value: `${isGroupFull(session, key) ? "**READY TO GO**\n\n" : ""}**Party**\n${partyLines.join("\n")}`,
         inline: true
       });
     }
@@ -410,7 +418,7 @@ client.on("interactionCreate", async interaction => {
       const key = `${dungeon}-${group}`;
 
       if (interaction.customId === "leave") {
-        removeUserFromSession(session, userId);
+        removeUserFromDungeon(session, userId, dungeon);
 
         shouldRefresh = true;
       } else {
@@ -423,7 +431,7 @@ client.on("interactionCreate", async interaction => {
         const displayName = interaction.member?.displayName || interaction.user.globalName || interaction.user.username;
         const fetchedPresence = await ensurePresenceForUser(interaction.guild, userId);
         const status = getPresenceStatus(fetchedPresence, getInteractionStatus(interaction));
-        removeUserFromSession(session, userId);
+        removeUserFromDungeon(session, userId, dungeon);
         session[key].team[interaction.customId] = {
           id: userId,
           name: interaction.user.username,

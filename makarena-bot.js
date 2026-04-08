@@ -198,7 +198,7 @@ function getPlayerName(player, member) {
 }
 
 function formatPlayerLine(icon, name, status, cooldown) {
-  return `${status} ${icon} ${name}${cooldown ? ` ${cooldown}` : ""}`;
+  return `${icon} ${name}${cooldown ? ` ${cooldown}` : ""}`;
 }
 
 async function sendInteractionNotice(interaction, content) {
@@ -265,9 +265,6 @@ async function buildEmbeds(session, guild) {
     const embed = new EmbedBuilder()
       .setTitle(`Party Finder - Dungeon ${tier}`)
       .setColor(0x2b2d31)
-      .setFooter({
-        text: `${STATUS_ICONS.online} Online • ${STATUS_ICONS.idle} Idle • ${STATUS_ICONS.dnd} DND • ${STATUS_ICONS.offline} Offline`
-      })
       .setTimestamp();
 
     const fields = [];

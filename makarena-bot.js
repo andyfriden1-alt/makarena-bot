@@ -136,6 +136,12 @@ function isGroupFull(session, key) {
   return getGroupSize(session, key) === MAX_PLAYERS;
 }
 
+function getTierKeys(session, tier) {
+  return Object.keys(session)
+    .filter(key => key.split("-")[0] === tier)
+    .sort((a, b) => Number(a.split("-")[1]) - Number(b.split("-")[1]));
+}
+
 function getMemberSafe(guild, id) {
   return guild.members.cache.get(id) || null;
 }
@@ -256,52 +262,66 @@ async function refreshSessionMessage(messageId) {
 // ===== EMBEDS =====
 async function buildEmbeds(session, guild) {
   syncSessionStatusesFromGuild(session, guild);
-
-  const tiers = {};
-
-  for (const key in session) {
-    const base = key.split("-")[0];
-    if (!tiers[base]) tiers[base] = [];
-    tiers[base].push(key);
-  }
-
+  const tiers = Object.keys(dungeonCooldowns).sort((a, b) => Number(a) - Number(b));
+  const splitIndex = Math.ceil(tiers.length / 2);
+  const leftColumnTiers = tiers.slice(0, splitIndex);
+  const rightColumnTiers = tiers.slice(splitIndex);
   const embeds = [];
 
-  for (const tier in tiers) {
+  for (let row = 0; row < splitIndex; row += 1) {
     const embed = new EmbedBuilder()
-      .setTitle(`Party Finder - Dungeon ${tier}`)
       .setColor(0x2b2d31)
       .setTimestamp();
 
+    if (row === 0) {
+      embed.setTitle("Party Finder");
+    }
+
     const fields = [];
 
-    for (const key of tiers[tier]) {
-      const data = session[key];
-      const group = key.split("-")[1];
-      const partyLines = [];
+    for (const tier of [leftColumnTiers[row], rightColumnTiers[row]]) {
+      if (!tier) continue;
 
-      for (const role of ROLE_ORDER) {
-        const player = data.team[role];
+      const groupBlocks = [];
 
-        if (!player) {
-          partyLines.push(`${ROLE_ICONS[role]} -`);
-          continue;
+      for (const key of getTierKeys(session, tier)) {
+        const data = session[key];
+        const group = key.split("-")[1];
+        const partyLines = [];
+
+        for (const role of ROLE_ORDER) {
+          const player = data.team[role];
+
+          if (!player) {
+            partyLines.push(`${ROLE_ICONS[role]} -`);
+            continue;
+          }
+
+          const presence = await ensurePresenceForUser(guild, player.id);
+          const member = await getMemberSafe(guild, player.id);
+          const name = getPlayerName(player, member);
+          const status = getStatusIcon(presence, player.status);
+          const cooldown = formatCooldown(getCooldown(player.id, key));
+
+          partyLines.push(formatPlayerLine(ROLE_ICONS[role], name, status, cooldown));
         }
 
-        const presence = await ensurePresenceForUser(guild, player.id);
-        const member = await getMemberSafe(guild, player.id);
-        const name = getPlayerName(player, member);
-        const status = getStatusIcon(presence, player.status);
-        const cooldown = formatCooldown(getCooldown(player.id, key));
-
-        partyLines.push(formatPlayerLine(ROLE_ICONS[role], name, status, cooldown));
+        groupBlocks.push(
+          `${isGroupFull(session, key) ? `**Group ${group} (${getGroupSize(session, key)}/4) - FULL**` : `**Group ${group} (${getGroupSize(session, key)}/4)**`}\n${isGroupFull(session, key) ? "**READY**\n" : ""}${partyLines.join("\n")}`
+        );
       }
 
       fields.push({
-        name: isGroupFull(session, key)
-          ? `Group ${group} (${getGroupSize(session, key)}/4) - FULL`
-          : `Group ${group} (${getGroupSize(session, key)}/4)`,
-        value: `${isGroupFull(session, key) ? "**READY**\n" : ""}${partyLines.join("\n")}`,
+        name: `Dungeon ${tier}`,
+        value: groupBlocks.join("\n\n"),
+        inline: true
+      });
+    }
+
+    if (fields.length === 1) {
+      fields.push({
+        name: "\u200B",
+        value: "\u200B",
         inline: true
       });
     }

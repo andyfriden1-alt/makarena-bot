@@ -52,7 +52,7 @@ function createEmptyDungeons() {
 
   Object.keys(dungeonCooldowns).forEach(dungeon => {
     for (let i = 1; i <= INSTANCES; i += 1) {
-      data[`${dungeon}-${i}`] = { lfg: [], team: {} };
+      data[`${dungeon}-${i}`] = { team: {} };
     }
   });
 
@@ -94,24 +94,26 @@ function setCooldown(userId, dungeon) {
 }
 
 function getGroupSize(session, key) {
-  return Object.keys(session[key].team).length + session[key].lfg.length;
+  return Object.keys(session[key].team).length;
 }
 
 function getMemberSafe(guild, id) {
   return guild.members.cache.get(id) || null;
 }
 
-function tryBuild(session, key) {
-  const team = {};
-
-  for (const role of ROLE_ORDER) {
-    const player = session[key].lfg.find(entry => entry.role === role);
-    if (!player) return;
-    team[role] = player;
+function removeUserFromSession(session, userId) {
+  for (const sessionKey in session) {
+    for (const role of ROLE_ORDER) {
+      if (session[sessionKey].team[role]?.id === userId) {
+        delete session[sessionKey].team[role];
+      }
+    }
   }
+}
 
-  session[key].team = team;
-  session[key].lfg = session[key].lfg.filter(player => !ROLE_ORDER.includes(player.role));
+function setGroupCooldownsIfFull(session, key) {
+  const team = session[key].team;
+  if (!ROLE_ORDER.every(role => team[role])) return;
 
   Object.values(team).forEach(player => setCooldown(player.id, key));
 }
@@ -174,7 +176,6 @@ async function buildEmbeds(session, guild) {
       const data = session[key];
       const group = key.split("-")[1];
       const partyLines = [];
-      const queueLines = [];
 
       for (const role of ROLE_ORDER) {
         const player = data.team[role];
@@ -192,18 +193,9 @@ async function buildEmbeds(session, guild) {
         partyLines.push(formatPlayerLine(ROLE_ICONS[role], name, status, cooldown));
       }
 
-      for (const player of data.lfg) {
-        const member = await getMemberSafe(guild, player.id);
-        const name = getPlayerName(player, member);
-        const status = getStatus(member);
-        const cooldown = formatCooldown(getCooldown(player.id, key));
-
-        queueLines.push(formatPlayerLine(ROLE_ICONS[player.role], name, status, cooldown));
-      }
-
       fields.push({
         name: `Group ${group} (${getGroupSize(session, key)}/4)`,
-        value: `**Party**\n${partyLines.join("\n")}\n\n**Queue**\n${queueLines.join("\n") || "-"}`,
+        value: `**Party**\n${partyLines.join("\n")}`,
         inline: true
       });
     }
@@ -316,43 +308,30 @@ client.on("interactionCreate", async interaction => {
       const key = `${dungeon}-${group}`;
 
       if (interaction.customId === "leave") {
-        for (const sessionKey in session) {
-          session[sessionKey].lfg = session[sessionKey].lfg.filter(player => player.id !== userId);
-
-          for (const role in session[sessionKey].team) {
-            if (session[sessionKey].team[role]?.id === userId) {
-              delete session[sessionKey].team[role];
-            }
-          }
-        }
+        removeUserFromSession(session, userId);
 
         shouldRefresh = true;
       } else {
-        if (getGroupSize(session, key) >= MAX_PLAYERS) {
-          await sendInteractionNotice(interaction, "Group full (4/4)");
+        const existingPlayer = session[key].team[interaction.customId];
+        if (existingPlayer && existingPlayer.id !== userId) {
+          await sendInteractionNotice(interaction, "That role is already taken in this group.");
           return;
         }
 
-        const existing = session[key].lfg.find(player => player.id === userId);
         const displayName = interaction.member?.displayName || interaction.user.globalName || interaction.user.username;
-
-        if (existing) {
-          existing.role = interaction.customId;
-          existing.displayName = displayName;
-        } else {
-          session[key].lfg.push({
-            id: userId,
-            name: interaction.user.username,
-            displayName,
-            role: interaction.customId
-          });
-        }
+        removeUserFromSession(session, userId);
+        session[key].team[interaction.customId] = {
+          id: userId,
+          name: interaction.user.username,
+          displayName,
+          role: interaction.customId
+        };
 
         console.log(
           `[interaction] ${interaction.user.tag} joined dungeon ${dungeon} group ${group} as ${interaction.customId} on ${messageId}`
         );
 
-        tryBuild(session, key);
+        setGroupCooldownsIfFull(session, key);
         shouldRefresh = true;
       }
     }

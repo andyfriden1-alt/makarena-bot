@@ -9,13 +9,7 @@ const {
 } = require('discord.js');
 
 const TOKEN = process.env.DISCORD_TOKEN || process.env.TOKEN;
-const enableMemberIntent = process.env.DISCORD_ENABLE_MEMBER_INTENT === 'true';
-const enablePresenceIntent = process.env.DISCORD_ENABLE_PRESENCE_INTENT === 'true';
-
 const intents = [GatewayIntentBits.Guilds];
-
-if (enableMemberIntent) intents.push(GatewayIntentBits.GuildMembers);
-if (enablePresenceIntent) intents.push(GatewayIntentBits.GuildPresences);
 
 const client = new Client({
   intents
@@ -87,9 +81,8 @@ function getGroupSize(session, key) {
 }
 
 // ===== SAFE MEMBER FETCH =====
-async function getMemberSafe(guild, id) {
-  return guild.members.cache.get(id) ||
-         await guild.members.fetch(id).catch(() => null);
+function getMemberSafe(guild, id) {
+  return guild.members.cache.get(id) || null;
 }
 
 // ===== TEAM BUILD =====
@@ -107,6 +100,10 @@ function tryBuild(session, key) {
   session[key].lfg = session[key].lfg.filter(p => !roles.includes(p.role));
 
   Object.values(team).forEach(p => setCooldown(p.id, key));
+}
+
+function getPlayerName(player, member) {
+  return member?.displayName || player.displayName || player.name;
 }
 
 // ===== EMBEDS =====
@@ -146,22 +143,22 @@ async function buildEmbeds(session, guild) {
         }
 
         const member = await getMemberSafe(guild, player.id);
-        const name = member?.displayName || player.name;
+        const name = getPlayerName(player, member);
         const status = getStatus(member);
         const cd = formatCooldown(getCooldown(player.id, key));
 
-        partyLines.push(`${status} ${icons[role]} ${name} ${cd}`);
+        partyLines.push(`${status}${status ? " " : ""}${icons[role]} ${name} ${cd}`.trim());
       }
 
       const queueLines = [];
 
       for (let p of data.lfg) {
         const member = await getMemberSafe(guild, p.id);
-        const name = member?.displayName || p.name;
+        const name = getPlayerName(p, member);
         const status = getStatus(member);
         const cd = formatCooldown(getCooldown(p.id, key));
 
-        queueLines.push(`${status} ${icons[p.role]} ${name} ${cd}`);
+        queueLines.push(`${status}${status ? " " : ""}${icons[p.role]} ${name} ${cd}`.trim());
       }
 
       fields.push({
@@ -214,6 +211,7 @@ function getComponents() {
 // ===== EVENTS =====
 client.on("interactionCreate", async interaction => {
   try {
+    let shouldRefresh = false;
 
     // ONLY your command
     if (interaction.isChatInputCommand() && interaction.commandName === "makarena") {
@@ -242,7 +240,8 @@ client.on("interactionCreate", async interaction => {
       if (interaction.customId === "group") {
         selectedGroup.set(interaction.user.id, interaction.values[0]);
       }
-      return interaction.deferUpdate();
+      await interaction.deferUpdate();
+      return;
     }
 
     if (interaction.isButton()) {
@@ -263,31 +262,37 @@ client.on("interactionCreate", async interaction => {
             if (session[k].team[r]?.id === userId) delete session[k].team[r];
           }
         }
-        return interaction.deferUpdate();
+        shouldRefresh = true;
+        await interaction.deferUpdate();
       }
-
-      const role = interaction.customId;
-
-      if (getGroupSize(session, key) >= MAX_PLAYERS) {
-        return interaction.reply({ content:"Group full (4/4)", ephemeral:true });
-      }
-
-      const existing = session[key].lfg.find(p => p.id === userId);
-      if (existing) existing.role = role;
       else {
-        session[key].lfg.push({
-          id: userId,
-          name: interaction.user.username,
-          role
-        });
-      }
+        const role = interaction.customId;
 
-      tryBuild(session, key);
-      return interaction.deferUpdate();
+        if (getGroupSize(session, key) >= MAX_PLAYERS) {
+          return interaction.reply({ content:"Group full (4/4)", ephemeral:true });
+        }
+
+        const existing = session[key].lfg.find(p => p.id === userId);
+        if (existing) {
+          existing.role = role;
+          existing.displayName = interaction.member?.displayName || interaction.user.globalName || interaction.user.username;
+        } else {
+          session[key].lfg.push({
+            id: userId,
+            name: interaction.user.username,
+            displayName: interaction.member?.displayName || interaction.user.globalName || interaction.user.username,
+            role
+          });
+        }
+
+        tryBuild(session, key);
+        shouldRefresh = true;
+        await interaction.deferUpdate();
+      }
     }
 
     // SAFE UPDATE
-    try {
+    if (shouldRefresh) try {
       const msg = await interaction.channel.messages.fetch(msgId);
       if (msg) {
         await msg.edit({
@@ -305,14 +310,7 @@ client.on("interactionCreate", async interaction => {
 client.once('ready', readyClient => {
   console.log(`[startup] Logged in as ${readyClient.user.tag}`);
   console.log(`[startup] Active intents: ${intents.join(', ')}`);
-
-  if (!enableMemberIntent) {
-    console.warn('[startup] DISCORD_ENABLE_MEMBER_INTENT is not true; display names may fall back to usernames.');
-  }
-
-  if (!enablePresenceIntent) {
-    console.warn('[startup] DISCORD_ENABLE_PRESENCE_INTENT is not true; status dots will show offline.');
-  }
+  console.warn('[startup] Running in Guilds-only mode. Presence dots will show offline unless privileged intents are added back later.');
 });
 
 client.on('error', error => {

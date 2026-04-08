@@ -140,6 +140,26 @@ function getPresenceSafe(guild, id) {
   return guild.presences?.cache.get(id) || null;
 }
 
+async function ensurePresenceForUser(guild, userId) {
+  if (!enablePresenceIntent || !guild) return getPresenceSafe(guild, userId);
+
+  const cachedPresence = getPresenceSafe(guild, userId);
+  if (cachedPresence) return cachedPresence;
+
+  try {
+    await guild.members.fetch({
+      user: userId,
+      withPresences: true,
+      force: true,
+      cache: true
+    });
+  } catch (error) {
+    console.warn(`[presence] Could not fetch presence for ${userId} in guild ${guild.id}:`, error);
+  }
+
+  return getPresenceSafe(guild, userId);
+}
+
 function removeUserFromSession(session, userId) {
   for (const sessionKey in session) {
     for (const role of ROLE_ORDER) {
@@ -265,8 +285,8 @@ async function buildEmbeds(session, guild) {
           continue;
         }
 
+        const presence = await ensurePresenceForUser(guild, player.id);
         const member = await getMemberSafe(guild, player.id);
-        const presence = getPresenceSafe(guild, player.id);
         const name = getPlayerName(player, member);
         const status = getStatusIcon(presence, player.status);
         const cooldown = formatCooldown(getCooldown(player.id, key));
@@ -404,7 +424,8 @@ client.on("interactionCreate", async interaction => {
         }
 
         const displayName = interaction.member?.displayName || interaction.user.globalName || interaction.user.username;
-        const status = getInteractionStatus(interaction);
+        const fetchedPresence = await ensurePresenceForUser(interaction.guild, userId);
+        const status = getPresenceStatus(fetchedPresence, getInteractionStatus(interaction));
         removeUserFromSession(session, userId);
         session[key].team[interaction.customId] = {
           id: userId,

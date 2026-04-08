@@ -306,7 +306,7 @@ async function buildEmbeds(session, guild) {
       inline: true
     });
 
-    if (index % 2 === 1 && index < tiers.length - 1) {
+    if ((index + 1) % 3 === 0 && index < tiers.length - 1) {
       fields.push({
         name: "\u200B",
         value: "\u200B",

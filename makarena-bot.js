@@ -69,12 +69,12 @@ function getSelectionKey(messageId, userId) {
   return `${messageId}:${userId}`;
 }
 
-function getPresenceStatus(member, fallbackStatus) {
-  return member?.presence?.status || fallbackStatus || "offline";
+function getPresenceStatus(presence, fallbackStatus) {
+  return presence?.status || fallbackStatus || "offline";
 }
 
-function getStatusIcon(member, fallbackStatus) {
-  return STATUS_ICONS[getPresenceStatus(member, fallbackStatus)] || STATUS_ICONS.offline;
+function getStatusIcon(presence, fallbackStatus) {
+  return STATUS_ICONS[getPresenceStatus(presence, fallbackStatus)] || STATUS_ICONS.offline;
 }
 
 function getInteractionStatus(interaction) {
@@ -112,6 +112,10 @@ function getGroupSize(session, key) {
 
 function getMemberSafe(guild, id) {
   return guild.members.cache.get(id) || null;
+}
+
+function getPresenceSafe(guild, id) {
+  return guild.presences?.cache.get(id) || null;
 }
 
 function removeUserFromSession(session, userId) {
@@ -238,8 +242,9 @@ async function buildEmbeds(session, guild) {
         }
 
         const member = await getMemberSafe(guild, player.id);
+        const presence = getPresenceSafe(guild, player.id);
         const name = getPlayerName(player, member);
-        const status = getStatusIcon(member, player.status);
+        const status = getStatusIcon(presence, player.status);
         const cooldown = formatCooldown(getCooldown(player.id, key));
 
         partyLines.push(formatPlayerLine(ROLE_ICONS[role], name, status, cooldown));

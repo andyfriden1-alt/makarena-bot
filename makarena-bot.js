@@ -78,7 +78,29 @@ function getStatusIcon(presence, fallbackStatus) {
 }
 
 function getInteractionStatus(interaction) {
-  return interaction.member?.presence?.status || "offline";
+  const cachedPresence = interaction.guild?.presences?.cache.get(interaction.user.id);
+  return cachedPresence?.status || interaction.member?.presence?.status || "offline";
+}
+
+function syncSessionStatusesFromGuild(session, guild) {
+  let changed = false;
+
+  if (!guild?.presences?.cache) return changed;
+
+  for (const sessionKey in session) {
+    for (const role of ROLE_ORDER) {
+      const player = session[sessionKey].team[role];
+      if (!player) continue;
+
+      const status = guild.presences.cache.get(player.id)?.status;
+      if (status && player.status !== status) {
+        player.status = status;
+        changed = true;
+      }
+    }
+  }
+
+  return changed;
 }
 
 function formatCooldown(ms) {
@@ -207,6 +229,8 @@ async function refreshSessionMessage(messageId) {
 
 // ===== EMBEDS =====
 async function buildEmbeds(session, guild) {
+  syncSessionStatusesFromGuild(session, guild);
+
   const tiers = {};
 
   for (const key in session) {
@@ -391,7 +415,7 @@ client.on("interactionCreate", async interaction => {
         };
 
         console.log(
-          `[interaction] ${interaction.user.tag} joined dungeon ${dungeon} group ${group} as ${interaction.customId} on ${messageId}`
+          `[interaction] ${interaction.user.tag} joined dungeon ${dungeon} group ${group} as ${interaction.customId} on ${messageId} with status ${status}`
         );
 
         setGroupCooldownsIfFull(session, key);

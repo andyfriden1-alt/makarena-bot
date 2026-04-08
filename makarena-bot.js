@@ -13,7 +13,7 @@ const client = new Client({
 });
 
 // ===== CONFIG =====
-const MAX_TEAMS = 3;
+const MAX_TEAMS = 1; // Tibia style = 1 party per group
 const INSTANCES = 3;
 
 const dungeonCooldowns = {
@@ -44,10 +44,15 @@ let selectedGroup = new Map();
 let cooldowns = new Map();
 
 // ===== COOLDOWN =====
-function hasCooldown(userId, dungeon) {
+function getCooldownRemaining(userId, dungeon) {
   const base = dungeon.split("-")[0];
-  if (!cooldowns.has(userId)) return false;
-  return cooldowns.get(userId)[base] > Date.now();
+  if (!cooldowns.has(userId)) return 0;
+
+  const time = cooldowns.get(userId)[base];
+  if (!time) return 0;
+
+  const remaining = time - Date.now();
+  return remaining > 0 ? remaining : 0;
 }
 
 function setCooldown(userId, dungeon) {
@@ -56,6 +61,19 @@ function setCooldown(userId, dungeon) {
 
   if (!cooldowns.has(userId)) cooldowns.set(userId, {});
   cooldowns.get(userId)[base] = time;
+}
+
+// ===== HELPERS =====
+function getGroupSize(session, key) {
+  const teamPlayers = session[key].teams.flatMap(t => Object.values(t));
+  return session[key].lfg.length + teamPlayers.length;
+}
+
+function formatCooldown(ms) {
+  if (ms <= 0) return "";
+
+  const hours = Math.floor(ms / (1000 * 60 * 60));
+  return `⏱ ${hours}h`;
 }
 
 // ===== TEAM BUILDER =====
@@ -92,9 +110,9 @@ function buildEmbeds(session) {
 
   for (let tier in tiers) {
     const embed = new EmbedBuilder()
-      .setTitle(`🎯 Dungeon ${tier}`)
-      .setColor(0xff9900)
-      .setFooter({ text: "Click a role to join • Auto team builder" })
+      .setTitle(`🏹 Tibia Party Finder — Dungeon ${tier}`)
+      .setColor(0x2b2d31)
+      .setFooter({ text: "🟢 Online • ⏱ Cooldown shown • Max 4 players" })
       .setTimestamp();
 
     let fields = [];
@@ -103,24 +121,28 @@ function buildEmbeds(session) {
       const data = session[key];
       const group = key.split("-")[1];
 
-      let teamsText = data.teams.map((team, i) => {
-        return `**Team ${i+1}**\n` + Object.values(team)
-          .map(p => `${icons[p.role]} ${p.name}`)
-          .join("\n");
-      }).join("\n\n");
+      // TEAM SLOTS
+      let teamSlots = ["EK","ED","MS","RP"].map(role => {
+        let player = Object.values(data.teams[0] || {}).find(p => p.role === role);
 
-      let queueText = data.lfg.length > 0
-        ? data.lfg.map(p => `${icons[p.role]} ${p.name}`).join("\n")
-        : "—";
+        if (!player) return `${icons[role]} —`;
+
+        const cd = formatCooldown(getCooldownRemaining(player.id, key));
+
+        return `🟢 ${icons[role]} ${player.name} ${cd}`;
+      }).join("\n");
+
+      // QUEUE
+      let queue = data.lfg.map(p => {
+        const cd = formatCooldown(getCooldownRemaining(p.id, key));
+        return `🟢 ${icons[p.role]} ${p.name} ${cd}`;
+      }).join("\n") || "—";
 
       fields.push({
-        name: `Group ${group}`,
+        name: `⚔️ Group ${group} (${getGroupSize(session, key)}/4)`,
         value:
-          `👥 Teams: ${data.teams.length}\n` +
-          `🔍 Queue: ${data.lfg.length}\n\n` +
-          (teamsText || "") +
-          (teamsText ? "\n\n" : "") +
-          queueText,
+          `**Party**\n${teamSlots}\n\n` +
+          `**Queue**\n${queue}`,
         inline: true
       });
     });
@@ -194,16 +216,17 @@ client.on("interactionCreate", async interaction => {
     const session = sessions.get(messageId);
     if (!session) return;
 
-    // SELECT DUNGEON
-    if (interaction.isStringSelectMenu() && interaction.customId === "dungeon_select") {
-      selectedDungeon.set(interaction.user.id, interaction.values[0]);
-      return interaction.reply({ content:`Selected Dungeon ${interaction.values[0]}`, ephemeral:true });
-    }
+    // SELECTS (NO SPAM)
+    if (interaction.isStringSelectMenu()) {
+      if (interaction.customId === "dungeon_select") {
+        selectedDungeon.set(interaction.user.id, interaction.values[0]);
+      }
 
-    // SELECT GROUP
-    if (interaction.isStringSelectMenu() && interaction.customId === "group_select") {
-      selectedGroup.set(interaction.user.id, interaction.values[0]);
-      return interaction.reply({ content:`Selected Group ${interaction.values[0]}`, ephemeral:true });
+      if (interaction.customId === "group_select") {
+        selectedGroup.set(interaction.user.id, interaction.values[0]);
+      }
+
+      return interaction.deferUpdate();
     }
 
     // BUTTONS
@@ -214,7 +237,7 @@ client.on("interactionCreate", async interaction => {
 
       if (!dungeon || !group) {
         return interaction.reply({
-          content: "Select dungeon AND group first",
+          content: "Select dungeon & group first",
           ephemeral: true
         });
       }
@@ -224,6 +247,13 @@ client.on("interactionCreate", async interaction => {
       // ROLE CLICK
       if (interaction.customId.startsWith("role_")) {
         const role = interaction.customId.split("_")[1];
+
+        if (getGroupSize(session, key) >= 4) {
+          return interaction.reply({
+            content: "🚫 Group is full (4/4)",
+            ephemeral: true
+          });
+        }
 
         const existing = session[key].lfg.find(p => p.id === userId);
 
@@ -239,10 +269,7 @@ client.on("interactionCreate", async interaction => {
 
         tryCreateTeam(session, key);
 
-        await interaction.reply({
-          content: `Joined Dungeon ${dungeon} Group ${group} as ${role}`,
-          ephemeral: true
-        });
+        return interaction.deferUpdate();
       }
 
       // LEAVE
@@ -257,10 +284,7 @@ client.on("interactionCreate", async interaction => {
           });
         }
 
-        await interaction.reply({
-          content: "Removed from all groups",
-          ephemeral: true
-        });
+        return interaction.deferUpdate();
       }
     }
 

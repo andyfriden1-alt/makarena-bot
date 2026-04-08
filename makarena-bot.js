@@ -98,8 +98,8 @@ function tryBuild(session, key) {
   Object.values(team).forEach(p => setCooldown(p.id, key));
 }
 
-// ===== EMBED =====
-function buildEmbeds(session, guild) {
+// ===== EMBEDS =====
+async function buildEmbeds(session, guild) {
   const icons = { EK:"🛡", ED:"💧", MS:"🔥", RP:"🏹" };
 
   let tiers = {};
@@ -125,31 +125,41 @@ function buildEmbeds(session, guild) {
       const group = key.split("-")[1];
 
       // PARTY
-      const party = ["EK","ED","MS","RP"].map(role => {
-        const player = data.team[role];
-        if (!player) return `${icons[role]} —`;
+      const partyLines = [];
 
-        const member = guild.members.cache.get(player.id);
+      for (let role of ["EK","ED","MS","RP"]) {
+        const player = data.team[role];
+
+        if (!player) {
+          partyLines.push(`${icons[role]} —`);
+          continue;
+        }
+
+        const member = await guild.members.fetch(player.id).catch(() => null);
         const name = member?.displayName || player.name;
         const status = getStatus(member);
         const cd = formatCooldown(getCooldown(player.id, key));
 
-        return `${status} ${icons[role]} ${name} ${cd}`;
-      }).join("\n");
+        partyLines.push(`${status} ${icons[role]} ${name} ${cd}`);
+      }
 
       // QUEUE
-      const queue = data.lfg.map(p => {
-        const member = guild.members.cache.get(p.id);
+      const queueLines = [];
+
+      for (let p of data.lfg) {
+        const member = await guild.members.fetch(p.id).catch(() => null);
         const name = member?.displayName || p.name;
         const status = getStatus(member);
         const cd = formatCooldown(getCooldown(p.id, key));
 
-        return `${status} ${icons[p.role]} ${name} ${cd}`;
-      }).join("\n") || "—";
+        queueLines.push(`${status} ${icons[p.role]} ${name} ${cd}`);
+      }
 
       fields.push({
         name: `⚔️ Group ${group} (${getGroupSize(session, key)}/4)`,
-        value: `**Party**\n${party}\n\n**Queue**\n${queue}`,
+        value:
+          `**Party**\n${partyLines.join("\n")}\n\n` +
+          `**Queue**\n${queueLines.join("\n") || "—"}`,
         inline: true
       });
     }
@@ -196,12 +206,11 @@ function getComponents() {
 client.on("interactionCreate", async interaction => {
   try {
 
-    // CREATE
     if (interaction.isChatInputCommand()) {
       const data = createEmptyDungeons();
 
       const msg = await interaction.reply({
-        embeds: buildEmbeds(data, interaction.guild),
+        embeds: await buildEmbeds(data, interaction.guild),
         components: getComponents(),
         fetchReply: true
       });
@@ -216,7 +225,6 @@ client.on("interactionCreate", async interaction => {
     const session = sessions.get(msgId);
     if (!session) return;
 
-    // SELECTS
     if (interaction.isStringSelectMenu()) {
       if (interaction.customId === "dungeon") {
         selectedDungeon.set(interaction.user.id, interaction.values[0]);
@@ -227,7 +235,6 @@ client.on("interactionCreate", async interaction => {
       return interaction.deferUpdate();
     }
 
-    // BUTTONS
     if (interaction.isButton()) {
       const userId = interaction.user.id;
       const dungeon = selectedDungeon.get(userId);
@@ -239,7 +246,6 @@ client.on("interactionCreate", async interaction => {
 
       const key = `${dungeon}-${group}`;
 
-      // LEAVE
       if (interaction.customId === "leave") {
         for (let k in session) {
           session[k].lfg = session[k].lfg.filter(p => p.id !== userId);
@@ -250,7 +256,6 @@ client.on("interactionCreate", async interaction => {
         return interaction.deferUpdate();
       }
 
-      // ROLE CLICK
       const role = interaction.customId;
 
       if (getGroupSize(session, key) >= MAX_PLAYERS) {
@@ -271,11 +276,10 @@ client.on("interactionCreate", async interaction => {
       return interaction.deferUpdate();
     }
 
-    // UPDATE
     const msg = await interaction.channel.messages.fetch(msgId);
     if (msg) {
       await msg.edit({
-        embeds: buildEmbeds(session, interaction.guild),
+        embeds: await buildEmbeds(session, interaction.guild),
         components: getComponents()
       });
     }

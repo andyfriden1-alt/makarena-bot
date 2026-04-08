@@ -9,7 +9,12 @@
 } = require('discord.js');
 
 const TOKEN = process.env.DISCORD_TOKEN || process.env.TOKEN;
+const enablePresenceIntent = process.env.DISCORD_ENABLE_PRESENCE_INTENT === "true";
 const intents = [GatewayIntentBits.Guilds];
+
+if (enablePresenceIntent) {
+  intents.push(GatewayIntentBits.GuildPresences);
+}
 
 const client = new Client({ intents });
 
@@ -42,6 +47,7 @@ const ROLE_ICONS = {
 
 // ===== DATA =====
 const sessions = new Map();
+const sessionMessages = new Map();
 const selectedDungeon = new Map();
 const selectedGroup = new Map();
 const cooldowns = new Map();
@@ -63,9 +69,16 @@ function getSelectionKey(messageId, userId) {
   return `${messageId}:${userId}`;
 }
 
-function getStatus(member) {
-  if (!member?.presence) return STATUS_ICONS.offline;
-  return STATUS_ICONS[member.presence.status] || STATUS_ICONS.offline;
+function getPresenceStatus(member, fallbackStatus) {
+  return member?.presence?.status || fallbackStatus || "offline";
+}
+
+function getStatusIcon(member, fallbackStatus) {
+  return STATUS_ICONS[getPresenceStatus(member, fallbackStatus)] || STATUS_ICONS.offline;
+}
+
+function getInteractionStatus(interaction) {
+  return interaction.member?.presence?.status || "offline";
 }
 
 function formatCooldown(ms) {
@@ -111,6 +124,22 @@ function removeUserFromSession(session, userId) {
   }
 }
 
+function updateUserStatusInSession(session, userId, status) {
+  let changed = false;
+
+  for (const sessionKey in session) {
+    for (const role of ROLE_ORDER) {
+      const player = session[sessionKey].team[role];
+      if (player?.id === userId && player.status !== status) {
+        player.status = status;
+        changed = true;
+      }
+    }
+  }
+
+  return changed;
+}
+
 function setGroupCooldownsIfFull(session, key) {
   const team = session[key].team;
   if (!ROLE_ORDER.every(role => team[role])) return;
@@ -147,6 +176,29 @@ async function replySessionExpired(interaction) {
     interaction,
     "This party finder message is no longer active after a bot restart/deploy. Run /makarena again to create a fresh one."
   );
+}
+
+async function refreshSessionMessage(messageId) {
+  const session = sessions.get(messageId);
+  const meta = sessionMessages.get(messageId);
+
+  if (!session || !meta) return;
+
+  try {
+    const channel = await client.channels.fetch(meta.channelId);
+    if (!channel?.isTextBased()) return;
+
+    const message = await channel.messages.fetch(messageId);
+    const guild = channel.guild || (meta.guildId ? await client.guilds.fetch(meta.guildId).catch(() => null) : null);
+    if (!message || !guild) return;
+
+    await message.edit({
+      embeds: await buildEmbeds(session, guild),
+      components: getComponents()
+    });
+  } catch (error) {
+    console.error(`[session] Failed to refresh party finder ${messageId}:`, error);
+  }
 }
 
 // ===== EMBEDS =====
@@ -187,7 +239,7 @@ async function buildEmbeds(session, guild) {
 
         const member = await getMemberSafe(guild, player.id);
         const name = getPlayerName(player, member);
-        const status = getStatus(member);
+        const status = getStatusIcon(member, player.status);
         const cooldown = formatCooldown(getCooldown(player.id, key));
 
         partyLines.push(formatPlayerLine(ROLE_ICONS[role], name, status, cooldown));
@@ -259,6 +311,10 @@ client.on("interactionCreate", async interaction => {
       });
 
       sessions.set(message.id, data);
+      sessionMessages.set(message.id, {
+        channelId: interaction.channelId,
+        guildId: interaction.guildId
+      });
       console.log(`[interaction] Created party finder message ${message.id}`);
       return;
     }
@@ -319,12 +375,14 @@ client.on("interactionCreate", async interaction => {
         }
 
         const displayName = interaction.member?.displayName || interaction.user.globalName || interaction.user.username;
+        const status = getInteractionStatus(interaction);
         removeUserFromSession(session, userId);
         session[key].team[interaction.customId] = {
           id: userId,
           name: interaction.user.username,
           displayName,
-          role: interaction.customId
+          role: interaction.customId,
+          status
         };
 
         console.log(
@@ -337,17 +395,7 @@ client.on("interactionCreate", async interaction => {
     }
 
     if (shouldRefresh) {
-      try {
-        const message = await interaction.channel.messages.fetch(messageId);
-        if (message) {
-          await message.edit({
-            embeds: await buildEmbeds(session, interaction.guild),
-            components: getComponents()
-          });
-        }
-      } catch (error) {
-        console.error("[interaction] Failed to refresh message:", error);
-      }
+      await refreshSessionMessage(messageId);
     }
   } catch (error) {
     console.error("ERROR:", error);
@@ -358,10 +406,33 @@ client.on("interactionCreate", async interaction => {
   }
 });
 
+client.on("presenceUpdate", async (oldPresence, newPresence) => {
+  const presence = newPresence || oldPresence;
+  const userId = presence?.userId;
+  const status = presence?.status || "offline";
+
+  if (!userId) return;
+
+  const refreshTasks = [];
+
+  for (const [messageId, session] of sessions.entries()) {
+    if (updateUserStatusInSession(session, userId, status)) {
+      refreshTasks.push(refreshSessionMessage(messageId));
+    }
+  }
+
+  if (refreshTasks.length > 0) {
+    console.log(`[presence] Updated ${refreshTasks.length} party finder message(s) for user ${userId} -> ${status}`);
+    await Promise.allSettled(refreshTasks);
+  }
+});
+
 client.once("ready", readyClient => {
   console.log(`[startup] Logged in as ${readyClient.user.tag}`);
   console.log(`[startup] Active intents: ${intents.join(", ")}`);
-  console.warn("[startup] Running in Guilds-only mode. Presence dots will show offline unless privileged intents are added back later.");
+  if (!enablePresenceIntent) {
+    console.warn("[startup] Presence intent is disabled. Status dots will stay offline until DISCORD_ENABLE_PRESENCE_INTENT=true is enabled.");
+  }
 });
 
 client.on("error", error => {

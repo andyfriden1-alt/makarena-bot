@@ -25,19 +25,23 @@ const dungeonCooldowns = {
   "120": 7
 };
 
-// ===== DATA =====
-const dungeons = {};
-Object.keys(dungeonCooldowns).forEach(d => {
-  for (let i = 1; i <= INSTANCES; i++) {
-    dungeons[`${d}-${i}`] = { lfg: [], teams: [] };
-  }
-});
+// ===== SESSIONS =====
+const sessions = new Map(); // messageId => dungeon data
 
-let cooldowns = new Map();
+function createEmptyDungeons() {
+  const data = {};
+  Object.keys(dungeonCooldowns).forEach(d => {
+    for (let i = 1; i <= INSTANCES; i++) {
+      data[`${d}-${i}`] = { lfg: [], teams: [] };
+    }
+  });
+  return data;
+}
+
+// ===== USER STATE =====
 let selectedDungeon = new Map();
 let selectedGroup = new Map();
-
-let botMessageId = null; // 🔥 store message ID
+let cooldowns = new Map();
 
 // ===== COOLDOWN =====
 function hasCooldown(userId, dungeon) {
@@ -55,30 +59,30 @@ function setCooldown(userId, dungeon) {
 }
 
 // ===== TEAM BUILDER =====
-function tryCreateTeam(dungeon) {
+function tryCreateTeam(session, dungeon) {
   const roles = ["EK","ED","MS","RP"];
   let team = {};
 
   for (let role of roles) {
-    const p = dungeons[dungeon].lfg.find(x => x.role === role);
+    const p = session[dungeon].lfg.find(x => x.role === role);
     if (!p) return;
     team[role] = p;
   }
 
-  dungeons[dungeon].lfg = dungeons[dungeon].lfg.filter(p => !roles.includes(p.role));
+  session[dungeon].lfg = session[dungeon].lfg.filter(p => !roles.includes(p.role));
 
-  if (dungeons[dungeon].teams.length < MAX_TEAMS) {
-    dungeons[dungeon].teams.push(team);
+  if (session[dungeon].teams.length < MAX_TEAMS) {
+    session[dungeon].teams.push(team);
     Object.values(team).forEach(p => setCooldown(p.id, dungeon));
   }
 }
 
 // ===== EMBEDS =====
-function buildEmbeds() {
+function buildEmbeds(session) {
   const icons = { EK:"🛡", ED:"💧", MS:"🔥", RP:"🏹" };
 
   let tiers = {};
-  for (let key in dungeons) {
+  for (let key in session) {
     const base = key.split("-")[0];
     if (!tiers[base]) tiers[base] = [];
     tiers[base].push(key);
@@ -94,17 +98,15 @@ function buildEmbeds() {
     let fields = [];
 
     tiers[tier].forEach(key => {
-      const data = dungeons[key];
+      const data = session[key];
       const group = key.split("-")[1];
 
-      // 👥 TEAM DISPLAY
       let teamsText = data.teams.map((team, i) => {
         return `**Team ${i+1}**\n` + Object.values(team)
           .map(p => `${icons[p.role]} ${p.name}`)
           .join("\n");
       }).join("\n\n");
 
-      // 🔍 LFG DISPLAY (ALL USERS)
       let preview = data.lfg.length > 0
         ? data.lfg.map(p => `${icons[p.role]} ${p.name}`).join("\n")
         : "—";
@@ -173,16 +175,25 @@ client.once("clientReady", () => {
 client.on("interactionCreate", async interaction => {
   try {
 
-    // COMMAND
+    // CREATE SESSION
     if (interaction.isChatInputCommand() && interaction.commandName === "makarena") {
+      const sessionData = createEmptyDungeons();
+
       const msg = await interaction.reply({
-        embeds: buildEmbeds(),
+        embeds: buildEmbeds(sessionData),
         components: getComponents(),
         fetchReply: true
       });
 
-      botMessageId = msg.id; // 🔥 save message
+      sessions.set(msg.id, sessionData);
     }
+
+    // GET SESSION
+    const messageId = interaction.message?.id;
+    if (!messageId) return;
+
+    const session = sessions.get(messageId);
+    if (!session) return;
 
     // SELECT DUNGEON
     if (interaction.isStringSelectMenu() && interaction.customId === "dungeon_select") {
@@ -216,7 +227,7 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.customId === "leave") {
-        dungeons[key].lfg = dungeons[key].lfg.filter(p => p.id !== userId);
+        session[key].lfg = session[key].lfg.filter(p => p.id !== userId);
         await interaction.reply({ content:"Removed", ephemeral:true });
       }
     }
@@ -234,31 +245,29 @@ client.on("interactionCreate", async interaction => {
 
       const key = `${dungeon}-${group}`;
 
-      if (dungeons[key].lfg.find(p => p.id === userId)) {
+      if (session[key].lfg.find(p => p.id === userId)) {
         return interaction.reply({ content:"Already in queue", ephemeral:true });
       }
 
-      dungeons[key].lfg.push({
+      session[key].lfg.push({
         id: userId,
         name: interaction.user.username,
         role
       });
 
-      tryCreateTeam(key);
+      tryCreateTeam(session, key);
 
       await interaction.reply({ content:`Joined Dungeon ${dungeon} Group ${group}`, ephemeral:true });
     }
 
-    // 🔄 UPDATE MESSAGE (RELIABLE)
-    if (interaction.channel && botMessageId) {
-      const botMsg = await interaction.channel.messages.fetch(botMessageId);
+    // UPDATE MESSAGE
+    const botMsg = await interaction.channel.messages.fetch(messageId);
 
-      if (botMsg) {
-        await botMsg.edit({
-          embeds: buildEmbeds(),
-          components: getComponents()
-        });
-      }
+    if (botMsg) {
+      await botMsg.edit({
+        embeds: buildEmbeds(session),
+        components: getComponents()
+      });
     }
 
   } catch (err) {

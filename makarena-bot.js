@@ -81,6 +81,12 @@ function getGroupSize(session, key) {
   return Object.keys(session[key].team).length + session[key].lfg.length;
 }
 
+// ===== SAFE MEMBER FETCH =====
+async function getMemberSafe(guild, id) {
+  return guild.members.cache.get(id) ||
+         await guild.members.fetch(id).catch(() => null);
+}
+
 // ===== TEAM BUILD =====
 function tryBuild(session, key) {
   const roles = ["EK","ED","MS","RP"];
@@ -124,7 +130,6 @@ async function buildEmbeds(session, guild) {
       const data = session[key];
       const group = key.split("-")[1];
 
-      // PARTY
       const partyLines = [];
 
       for (let role of ["EK","ED","MS","RP"]) {
@@ -135,7 +140,7 @@ async function buildEmbeds(session, guild) {
           continue;
         }
 
-        const member = await guild.members.fetch(player.id).catch(() => null);
+        const member = await getMemberSafe(guild, player.id);
         const name = member?.displayName || player.name;
         const status = getStatus(member);
         const cd = formatCooldown(getCooldown(player.id, key));
@@ -143,11 +148,10 @@ async function buildEmbeds(session, guild) {
         partyLines.push(`${status} ${icons[role]} ${name} ${cd}`);
       }
 
-      // QUEUE
       const queueLines = [];
 
       for (let p of data.lfg) {
-        const member = await guild.members.fetch(p.id).catch(() => null);
+        const member = await getMemberSafe(guild, p.id);
         const name = member?.displayName || p.name;
         const status = getStatus(member);
         const cd = formatCooldown(getCooldown(p.id, key));
@@ -206,7 +210,8 @@ function getComponents() {
 client.on("interactionCreate", async interaction => {
   try {
 
-    if (interaction.isChatInputCommand()) {
+    // ONLY your command
+    if (interaction.isChatInputCommand() && interaction.commandName === "makarena") {
       const data = createEmptyDungeons();
 
       const msg = await interaction.reply({
@@ -276,16 +281,19 @@ client.on("interactionCreate", async interaction => {
       return interaction.deferUpdate();
     }
 
-    const msg = await interaction.channel.messages.fetch(msgId);
-    if (msg) {
-      await msg.edit({
-        embeds: await buildEmbeds(session, interaction.guild),
-        components: getComponents()
-      });
-    }
+    // SAFE UPDATE
+    try {
+      const msg = await interaction.channel.messages.fetch(msgId);
+      if (msg) {
+        await msg.edit({
+          embeds: await buildEmbeds(session, interaction.guild),
+          components: getComponents()
+        });
+      }
+    } catch {}
 
   } catch (e) {
-    console.error(e);
+    console.error("ERROR:", e);
   }
 });
 

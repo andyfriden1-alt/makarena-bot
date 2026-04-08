@@ -106,6 +106,15 @@ function getPlayerName(player, member) {
   return member?.displayName || player.displayName || player.name;
 }
 
+async function replySessionExpired(interaction) {
+  if (interaction.deferred || interaction.replied) return;
+
+  await interaction.reply({
+    content: "This party finder message is no longer active after a bot restart/deploy. Run /makarena again to create a fresh one.",
+    ephemeral: true
+  });
+}
+
 // ===== EMBEDS =====
 async function buildEmbeds(session, guild) {
   const icons = { EK:"🛡", ED:"💧", MS:"🔥", RP:"🏹" };
@@ -228,10 +237,21 @@ client.on("interactionCreate", async interaction => {
     }
 
     const msgId = interaction.message?.id;
-    if (!msgId) return;
+    if (!msgId) {
+      if (interaction.isMessageComponent()) {
+        await interaction.reply({
+          content: "Could not identify the source message for this interaction.",
+          ephemeral: true
+        });
+      }
+      return;
+    }
 
     const session = sessions.get(msgId);
-    if (!session) return;
+    if (!session) {
+      await replySessionExpired(interaction);
+      return;
+    }
 
     if (interaction.isStringSelectMenu()) {
       if (interaction.customId === "dungeon") {
@@ -250,7 +270,7 @@ client.on("interactionCreate", async interaction => {
       const group = selectedGroup.get(userId);
 
       if (!dungeon || !group) {
-        return interaction.reply({ content:"Pick dungeon & group first", ephemeral:true });
+        return interaction.reply({ content:"Pick both dungeon and group first.", ephemeral:true });
       }
 
       const key = `${dungeon}-${group}`;

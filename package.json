@@ -2,8 +2,10 @@
   "name": "makarena-bot",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "makarena-bot.js",
   "scripts": {
+    "start": "node makarena-bot.js",
+    "register": "node register.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

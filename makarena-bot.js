@@ -8,12 +8,17 @@ const {
   EmbedBuilder
 } = require('discord.js');
 
+const TOKEN = process.env.DISCORD_TOKEN || process.env.TOKEN;
+const enableMemberIntent = process.env.DISCORD_ENABLE_MEMBER_INTENT === 'true';
+const enablePresenceIntent = process.env.DISCORD_ENABLE_PRESENCE_INTENT === 'true';
+
+const intents = [GatewayIntentBits.Guilds];
+
+if (enableMemberIntent) intents.push(GatewayIntentBits.GuildMembers);
+if (enablePresenceIntent) intents.push(GatewayIntentBits.GuildPresences);
+
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildPresences
-  ]
+  intents
 });
 
 // ===== CONFIG =====
@@ -297,4 +302,42 @@ client.on("interactionCreate", async interaction => {
   }
 });
 
-client.login(process.env.TOKEN);
+client.once('ready', readyClient => {
+  console.log(`[startup] Logged in as ${readyClient.user.tag}`);
+  console.log(`[startup] Active intents: ${intents.join(', ')}`);
+
+  if (!enableMemberIntent) {
+    console.warn('[startup] DISCORD_ENABLE_MEMBER_INTENT is not true; display names may fall back to usernames.');
+  }
+
+  if (!enablePresenceIntent) {
+    console.warn('[startup] DISCORD_ENABLE_PRESENCE_INTENT is not true; status dots will show offline.');
+  }
+});
+
+client.on('error', error => {
+  console.error('[discord] Client error:', error);
+});
+
+client.on('shardError', error => {
+  console.error('[discord] Shard error:', error);
+});
+
+process.on('unhandledRejection', error => {
+  console.error('[process] Unhandled rejection:', error);
+});
+
+process.on('uncaughtException', error => {
+  console.error('[process] Uncaught exception:', error);
+});
+
+if (!TOKEN) {
+  console.error('[startup] Missing Discord token. Set DISCORD_TOKEN (recommended) or TOKEN in Railway variables.');
+  process.exit(1);
+}
+
+console.log('[startup] Starting Discord bot...');
+client.login(TOKEN).catch(error => {
+  console.error('[startup] Discord login failed:', error);
+  process.exit(1);
+});

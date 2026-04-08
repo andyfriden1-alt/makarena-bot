@@ -1,4 +1,4 @@
-const {
+﻿const {
   Client,
   GatewayIntentBits,
   ActionRowBuilder,
@@ -11,9 +11,7 @@ const {
 const TOKEN = process.env.DISCORD_TOKEN || process.env.TOKEN;
 const intents = [GatewayIntentBits.Guilds];
 
-const client = new Client({
-  intents
-});
+const client = new Client({ intents });
 
 // ===== CONFIG =====
 const INSTANCES = 3;
@@ -28,6 +26,20 @@ const dungeonCooldowns = {
   "120": 7
 };
 
+const ROLE_ORDER = ["EK", "ED", "MS", "RP"];
+const STATUS_ICONS = {
+  online: "\u{1F7E2}",
+  idle: "\u{1F7E1}",
+  dnd: "\u{1F534}",
+  offline: "\u26AB"
+};
+const ROLE_ICONS = {
+  EK: "\u{1F6E1}",
+  ED: "\u{1F4A7}",
+  MS: "\u{1F525}",
+  RP: "\u{1F3F9}"
+};
+
 // ===== DATA =====
 const sessions = new Map();
 const selectedDungeon = new Map();
@@ -37,35 +49,40 @@ const cooldowns = new Map();
 // ===== HELPERS =====
 function createEmptyDungeons() {
   const data = {};
-  Object.keys(dungeonCooldowns).forEach(d => {
-    for (let i = 1; i <= INSTANCES; i++) {
-      data[`${d}-${i}`] = { lfg: [], team: {} };
+
+  Object.keys(dungeonCooldowns).forEach(dungeon => {
+    for (let i = 1; i <= INSTANCES; i += 1) {
+      data[`${dungeon}-${i}`] = { lfg: [], team: {} };
     }
   });
+
   return data;
 }
 
+function getSelectionKey(messageId, userId) {
+  return `${messageId}:${userId}`;
+}
+
 function getStatus(member) {
-  if (!member?.presence) return "⚫";
-  const s = member.presence.status;
-  if (s === "online") return "🟢";
-  if (s === "idle") return "🟡";
-  if (s === "dnd") return "🔴";
-  return "⚫";
+  if (!member?.presence) return STATUS_ICONS.offline;
+  return STATUS_ICONS[member.presence.status] || STATUS_ICONS.offline;
 }
 
 function formatCooldown(ms) {
   if (!ms || ms <= 0) return "";
-  const h = Math.floor(ms / 3600000);
-  return `⏱ ${h}h`;
+
+  const hours = Math.floor(ms / 3600000);
+  return `\u23F1 ${hours}h`;
 }
 
 function getCooldown(userId, dungeon) {
   const base = dungeon.split("-")[0];
   if (!cooldowns.has(userId)) return 0;
-  const t = cooldowns.get(userId)[base];
-  if (!t) return 0;
-  return Math.max(0, t - Date.now());
+
+  const time = cooldowns.get(userId)[base];
+  if (!time) return 0;
+
+  return Math.max(0, time - Date.now());
 }
 
 function setCooldown(userId, dungeon) {
@@ -80,47 +97,61 @@ function getGroupSize(session, key) {
   return Object.keys(session[key].team).length + session[key].lfg.length;
 }
 
-// ===== SAFE MEMBER FETCH =====
 function getMemberSafe(guild, id) {
   return guild.members.cache.get(id) || null;
 }
 
-// ===== TEAM BUILD =====
 function tryBuild(session, key) {
-  const roles = ["EK","ED","MS","RP"];
-  let team = {};
+  const team = {};
 
-  for (let role of roles) {
-    const p = session[key].lfg.find(x => x.role === role);
-    if (!p) return;
-    team[role] = p;
+  for (const role of ROLE_ORDER) {
+    const player = session[key].lfg.find(entry => entry.role === role);
+    if (!player) return;
+    team[role] = player;
   }
 
   session[key].team = team;
-  session[key].lfg = session[key].lfg.filter(p => !roles.includes(p.role));
+  session[key].lfg = session[key].lfg.filter(player => !ROLE_ORDER.includes(player.role));
 
-  Object.values(team).forEach(p => setCooldown(p.id, key));
+  Object.values(team).forEach(player => setCooldown(player.id, key));
 }
 
 function getPlayerName(player, member) {
   return member?.displayName || player.displayName || player.name;
 }
 
-async function replySessionExpired(interaction) {
-  if (interaction.deferred || interaction.replied) return;
+function formatPlayerLine(icon, name, status, cooldown) {
+  return `${status} ${icon} ${name}${cooldown ? ` ${cooldown}` : ""}`;
+}
 
-  await interaction.reply({
-    content: "This party finder message is no longer active after a bot restart/deploy. Run /makarena again to create a fresh one.",
-    ephemeral: true
-  });
+async function sendInteractionNotice(interaction, content) {
+  const payload = { content, ephemeral: true };
+
+  if (interaction.deferred || interaction.replied) {
+    await interaction.followUp(payload).catch(() => null);
+    return;
+  }
+
+  await interaction.reply(payload).catch(() => null);
+}
+
+async function acknowledgeComponent(interaction) {
+  if (!interaction.isMessageComponent() || interaction.deferred || interaction.replied) return;
+  await interaction.deferUpdate();
+}
+
+async function replySessionExpired(interaction) {
+  await sendInteractionNotice(
+    interaction,
+    "This party finder message is no longer active after a bot restart/deploy. Run /makarena again to create a fresh one."
+  );
 }
 
 // ===== EMBEDS =====
 async function buildEmbeds(session, guild) {
-  const icons = { EK:"🛡", ED:"💧", MS:"🔥", RP:"🏹" };
+  const tiers = {};
 
-  let tiers = {};
-  for (let key in session) {
+  for (const key in session) {
     const base = key.split("-")[0];
     if (!tiers[base]) tiers[base] = [];
     tiers[base].push(key);
@@ -128,53 +159,51 @@ async function buildEmbeds(session, guild) {
 
   const embeds = [];
 
-  for (let tier in tiers) {
+  for (const tier in tiers) {
     const embed = new EmbedBuilder()
-      .setTitle(`🏹 Tibia Party Finder — Dungeon ${tier}`)
+      .setTitle(`Party Finder - Dungeon ${tier}`)
       .setColor(0x2b2d31)
-      .setFooter({ text: "🟢 Online • 🟡 Idle • 🔴 DND • ⚫ Offline" })
+      .setFooter({
+        text: `${STATUS_ICONS.online} Online • ${STATUS_ICONS.idle} Idle • ${STATUS_ICONS.dnd} DND • ${STATUS_ICONS.offline} Offline`
+      })
       .setTimestamp();
 
-    let fields = [];
+    const fields = [];
 
-    for (let key of tiers[tier]) {
+    for (const key of tiers[tier]) {
       const data = session[key];
       const group = key.split("-")[1];
-
       const partyLines = [];
+      const queueLines = [];
 
-      for (let role of ["EK","ED","MS","RP"]) {
+      for (const role of ROLE_ORDER) {
         const player = data.team[role];
 
         if (!player) {
-          partyLines.push(`${icons[role]} —`);
+          partyLines.push(`${ROLE_ICONS[role]} -`);
           continue;
         }
 
         const member = await getMemberSafe(guild, player.id);
         const name = getPlayerName(player, member);
         const status = getStatus(member);
-        const cd = formatCooldown(getCooldown(player.id, key));
+        const cooldown = formatCooldown(getCooldown(player.id, key));
 
-        partyLines.push(`${status}${status ? " " : ""}${icons[role]} ${name} ${cd}`.trim());
+        partyLines.push(formatPlayerLine(ROLE_ICONS[role], name, status, cooldown));
       }
 
-      const queueLines = [];
-
-      for (let p of data.lfg) {
-        const member = await getMemberSafe(guild, p.id);
-        const name = getPlayerName(p, member);
+      for (const player of data.lfg) {
+        const member = await getMemberSafe(guild, player.id);
+        const name = getPlayerName(player, member);
         const status = getStatus(member);
-        const cd = formatCooldown(getCooldown(p.id, key));
+        const cooldown = formatCooldown(getCooldown(player.id, key));
 
-        queueLines.push(`${status}${status ? " " : ""}${icons[p.role]} ${name} ${cd}`.trim());
+        queueLines.push(formatPlayerLine(ROLE_ICONS[player.role], name, status, cooldown));
       }
 
       fields.push({
-        name: `⚔️ Group ${group} (${getGroupSize(session, key)}/4)`,
-        value:
-          `**Party**\n${partyLines.join("\n")}\n\n` +
-          `**Queue**\n${queueLines.join("\n") || "—"}`,
+        name: `Group ${group} (${getGroupSize(session, key)}/4)`,
+        value: `**Party**\n${partyLines.join("\n")}\n\n**Queue**\n${queueLines.join("\n") || "-"}`,
         inline: true
       });
     }
@@ -193,23 +222,29 @@ function getComponents() {
       new StringSelectMenuBuilder()
         .setCustomId("dungeon")
         .setPlaceholder("Dungeon")
-        .addOptions(Object.keys(dungeonCooldowns).map(d => ({
-          label: `Dungeon ${d}`, value: d
-        })))
+        .addOptions(
+          Object.keys(dungeonCooldowns).map(dungeon => ({
+            label: `Dungeon ${dungeon}`,
+            value: dungeon
+          }))
+        )
     ),
     new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
         .setCustomId("group")
         .setPlaceholder("Group")
-        .addOptions(["1","2","3"].map(g => ({
-          label: `Group ${g}`, value: g
-        })))
+        .addOptions(
+          ["1", "2", "3"].map(group => ({
+            label: `Group ${group}`,
+            value: group
+          }))
+        )
     ),
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("EK").setLabel("🛡").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("ED").setLabel("💧").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("MS").setLabel("🔥").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("RP").setLabel("🏹").setStyle(ButtonStyle.Primary)
+      new ButtonBuilder().setCustomId("EK").setLabel(ROLE_ICONS.EK).setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("ED").setLabel(ROLE_ICONS.ED).setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("MS").setLabel(ROLE_ICONS.MS).setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("RP").setLabel(ROLE_ICONS.RP).setStyle(ButtonStyle.Primary)
     ),
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("leave").setLabel("Leave").setStyle(ButtonStyle.Danger)
@@ -222,140 +257,157 @@ client.on("interactionCreate", async interaction => {
   try {
     let shouldRefresh = false;
 
-    // ONLY your command
     if (interaction.isChatInputCommand() && interaction.commandName === "makarena") {
       const data = createEmptyDungeons();
 
-      const msg = await interaction.reply({
+      const message = await interaction.reply({
         embeds: await buildEmbeds(data, interaction.guild),
         components: getComponents(),
         fetchReply: true
       });
 
-      sessions.set(msg.id, data);
+      sessions.set(message.id, data);
+      console.log(`[interaction] Created party finder message ${message.id}`);
       return;
     }
 
-    const msgId = interaction.message?.id;
-    if (!msgId) {
+    const messageId = interaction.message?.id;
+    if (!messageId) {
       if (interaction.isMessageComponent()) {
-        await interaction.reply({
-          content: "Could not identify the source message for this interaction.",
-          ephemeral: true
-        });
+        await sendInteractionNotice(interaction, "Could not identify the source message for this interaction.");
       }
       return;
     }
 
-    const session = sessions.get(msgId);
+    await acknowledgeComponent(interaction);
+
+    const session = sessions.get(messageId);
     if (!session) {
       await replySessionExpired(interaction);
       return;
     }
 
+    const selectionKey = getSelectionKey(messageId, interaction.user.id);
+
     if (interaction.isStringSelectMenu()) {
       if (interaction.customId === "dungeon") {
-        selectedDungeon.set(interaction.user.id, interaction.values[0]);
+        selectedDungeon.set(selectionKey, interaction.values[0]);
+        console.log(`[interaction] ${interaction.user.tag} selected dungeon ${interaction.values[0]} on ${messageId}`);
       }
+
       if (interaction.customId === "group") {
-        selectedGroup.set(interaction.user.id, interaction.values[0]);
+        selectedGroup.set(selectionKey, interaction.values[0]);
+        console.log(`[interaction] ${interaction.user.tag} selected group ${interaction.values[0]} on ${messageId}`);
       }
-      await interaction.deferUpdate();
+
       return;
     }
 
     if (interaction.isButton()) {
       const userId = interaction.user.id;
-      const dungeon = selectedDungeon.get(userId);
-      const group = selectedGroup.get(userId);
+      const dungeon = selectedDungeon.get(selectionKey);
+      const group = selectedGroup.get(selectionKey);
 
       if (!dungeon || !group) {
-        return interaction.reply({ content:"Pick both dungeon and group first.", ephemeral:true });
+        await sendInteractionNotice(interaction, "Pick both dungeon and group first.");
+        return;
       }
 
       const key = `${dungeon}-${group}`;
 
       if (interaction.customId === "leave") {
-        for (let k in session) {
-          session[k].lfg = session[k].lfg.filter(p => p.id !== userId);
-          for (let r in session[k].team) {
-            if (session[k].team[r]?.id === userId) delete session[k].team[r];
+        for (const sessionKey in session) {
+          session[sessionKey].lfg = session[sessionKey].lfg.filter(player => player.id !== userId);
+
+          for (const role in session[sessionKey].team) {
+            if (session[sessionKey].team[role]?.id === userId) {
+              delete session[sessionKey].team[role];
+            }
           }
         }
-        shouldRefresh = true;
-        await interaction.deferUpdate();
-      }
-      else {
-        const role = interaction.customId;
 
+        shouldRefresh = true;
+      } else {
         if (getGroupSize(session, key) >= MAX_PLAYERS) {
-          return interaction.reply({ content:"Group full (4/4)", ephemeral:true });
+          await sendInteractionNotice(interaction, "Group full (4/4)");
+          return;
         }
 
-        const existing = session[key].lfg.find(p => p.id === userId);
+        const existing = session[key].lfg.find(player => player.id === userId);
+        const displayName = interaction.member?.displayName || interaction.user.globalName || interaction.user.username;
+
         if (existing) {
-          existing.role = role;
-          existing.displayName = interaction.member?.displayName || interaction.user.globalName || interaction.user.username;
+          existing.role = interaction.customId;
+          existing.displayName = displayName;
         } else {
           session[key].lfg.push({
             id: userId,
             name: interaction.user.username,
-            displayName: interaction.member?.displayName || interaction.user.globalName || interaction.user.username,
-            role
+            displayName,
+            role: interaction.customId
           });
         }
 
+        console.log(
+          `[interaction] ${interaction.user.tag} joined dungeon ${dungeon} group ${group} as ${interaction.customId} on ${messageId}`
+        );
+
         tryBuild(session, key);
         shouldRefresh = true;
-        await interaction.deferUpdate();
       }
     }
 
-    // SAFE UPDATE
-    if (shouldRefresh) try {
-      const msg = await interaction.channel.messages.fetch(msgId);
-      if (msg) {
-        await msg.edit({
-          embeds: await buildEmbeds(session, interaction.guild),
-          components: getComponents()
-        });
+    if (shouldRefresh) {
+      try {
+        const message = await interaction.channel.messages.fetch(messageId);
+        if (message) {
+          await message.edit({
+            embeds: await buildEmbeds(session, interaction.guild),
+            components: getComponents()
+          });
+        }
+      } catch (error) {
+        console.error("[interaction] Failed to refresh message:", error);
       }
-    } catch {}
+    }
+  } catch (error) {
+    console.error("ERROR:", error);
 
-  } catch (e) {
-    console.error("ERROR:", e);
+    if (interaction.isRepliable()) {
+      await sendInteractionNotice(interaction, "Something went wrong while handling that interaction.");
+    }
   }
 });
 
-client.once('ready', readyClient => {
+client.once("ready", readyClient => {
   console.log(`[startup] Logged in as ${readyClient.user.tag}`);
-  console.log(`[startup] Active intents: ${intents.join(', ')}`);
-  console.warn('[startup] Running in Guilds-only mode. Presence dots will show offline unless privileged intents are added back later.');
+  console.log(`[startup] Active intents: ${intents.join(", ")}`);
+  console.warn("[startup] Running in Guilds-only mode. Presence dots will show offline unless privileged intents are added back later.");
 });
 
-client.on('error', error => {
-  console.error('[discord] Client error:', error);
+client.on("error", error => {
+  console.error("[discord] Client error:", error);
 });
 
-client.on('shardError', error => {
-  console.error('[discord] Shard error:', error);
+client.on("shardError", error => {
+  console.error("[discord] Shard error:", error);
 });
 
-process.on('unhandledRejection', error => {
-  console.error('[process] Unhandled rejection:', error);
+process.on("unhandledRejection", error => {
+  console.error("[process] Unhandled rejection:", error);
 });
 
-process.on('uncaughtException', error => {
-  console.error('[process] Uncaught exception:', error);
+process.on("uncaughtException", error => {
+  console.error("[process] Uncaught exception:", error);
 });
 
 if (!TOKEN) {
-  console.error('[startup] Missing Discord token. Set DISCORD_TOKEN (recommended) or TOKEN in Railway variables.');
+  console.error("[startup] Missing Discord token. Set DISCORD_TOKEN (recommended) or TOKEN in Railway variables.");
   process.exit(1);
 }
 
-console.log('[startup] Starting Discord bot...');
+console.log("[startup] Starting Discord bot...");
 client.login(TOKEN).catch(error => {
-  console.error('[startup] Discord login failed:', error);
+  console.error("[startup] Discord login failed:", error);
   process.exit(1);
 });

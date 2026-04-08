@@ -26,7 +26,7 @@ const dungeonCooldowns = {
 };
 
 // ===== SESSIONS =====
-const sessions = new Map(); // messageId => dungeon data
+const sessions = new Map();
 
 function createEmptyDungeons() {
   const data = {};
@@ -93,7 +93,9 @@ function buildEmbeds(session) {
   for (let tier in tiers) {
     const embed = new EmbedBuilder()
       .setTitle(`🎯 Dungeon ${tier}`)
-      .setColor(0xff9900);
+      .setColor(0xff9900)
+      .setFooter({ text: "Click a role to join • Auto team builder" })
+      .setTimestamp();
 
     let fields = [];
 
@@ -107,7 +109,7 @@ function buildEmbeds(session) {
           .join("\n");
       }).join("\n\n");
 
-      let preview = data.lfg.length > 0
+      let queueText = data.lfg.length > 0
         ? data.lfg.map(p => `${icons[p.role]} ${p.name}`).join("\n")
         : "—";
 
@@ -118,7 +120,7 @@ function buildEmbeds(session) {
           `🔍 Queue: ${data.lfg.length}\n\n` +
           (teamsText || "") +
           (teamsText ? "\n\n" : "") +
-          preview,
+          queueText,
         inline: true
       });
     });
@@ -152,16 +154,13 @@ function getComponents() {
         })))
     ),
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("join").setLabel("Join").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("leave").setLabel("Leave").setStyle(ButtonStyle.Danger)
+      new ButtonBuilder().setCustomId("role_EK").setLabel("🛡 EK").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("role_ED").setLabel("💧 ED").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("role_MS").setLabel("🔥 MS").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("role_RP").setLabel("🏹 RP").setStyle(ButtonStyle.Primary)
     ),
     new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId("role")
-        .setPlaceholder("Select role")
-        .addOptions(["EK","ED","MS","RP"].map(r => ({
-          label:r,value:r
-        })))
+      new ButtonBuilder().setCustomId("leave").setLabel("Leave").setStyle(ButtonStyle.Danger)
     )
   ];
 }
@@ -186,9 +185,9 @@ client.on("interactionCreate", async interaction => {
       });
 
       sessions.set(msg.id, sessionData);
+      return;
     }
 
-    // GET SESSION
     const messageId = interaction.message?.id;
     if (!messageId) return;
 
@@ -214,50 +213,55 @@ client.on("interactionCreate", async interaction => {
       const group = selectedGroup.get(userId);
 
       if (!dungeon || !group) {
-        return interaction.reply({ content:"Select dungeon AND group first", ephemeral:true });
+        return interaction.reply({
+          content: "Select dungeon AND group first",
+          ephemeral: true
+        });
       }
 
       const key = `${dungeon}-${group}`;
 
-      if (interaction.customId === "join") {
-        if (hasCooldown(userId, key)) {
-          return interaction.reply({ content:"Cooldown active", ephemeral:true });
+      // ROLE CLICK
+      if (interaction.customId.startsWith("role_")) {
+        const role = interaction.customId.split("_")[1];
+
+        const existing = session[key].lfg.find(p => p.id === userId);
+
+        if (existing) {
+          existing.role = role;
+        } else {
+          session[key].lfg.push({
+            id: userId,
+            name: interaction.user.username,
+            role
+          });
         }
-        return interaction.reply({ content:"Now pick your role below 👇", ephemeral:true });
+
+        tryCreateTeam(session, key);
+
+        await interaction.reply({
+          content: `Joined Dungeon ${dungeon} Group ${group} as ${role}`,
+          ephemeral: true
+        });
       }
 
+      // LEAVE
       if (interaction.customId === "leave") {
-        session[key].lfg = session[key].lfg.filter(p => p.id !== userId);
-        await interaction.reply({ content:"Removed", ephemeral:true });
+        for (let k in session) {
+          session[k].lfg = session[k].lfg.filter(p => p.id !== userId);
+
+          session[k].teams.forEach(team => {
+            for (let r in team) {
+              if (team[r]?.id === userId) delete team[r];
+            }
+          });
+        }
+
+        await interaction.reply({
+          content: "Removed from all groups",
+          ephemeral: true
+        });
       }
-    }
-
-    // ROLE SELECT
-    if (interaction.isStringSelectMenu() && interaction.customId === "role") {
-      const userId = interaction.user.id;
-      const dungeon = selectedDungeon.get(userId);
-      const group = selectedGroup.get(userId);
-      const role = interaction.values[0];
-
-      if (!dungeon || !group) {
-        return interaction.reply({ content:"Select dungeon AND group first", ephemeral:true });
-      }
-
-      const key = `${dungeon}-${group}`;
-
-      if (session[key].lfg.find(p => p.id === userId)) {
-        return interaction.reply({ content:"Already in queue", ephemeral:true });
-      }
-
-      session[key].lfg.push({
-        id: userId,
-        name: interaction.user.username,
-        role
-      });
-
-      tryCreateTeam(session, key);
-
-      await interaction.reply({ content:`Joined Dungeon ${dungeon} Group ${group}`, ephemeral:true });
     }
 
     // UPDATE MESSAGE

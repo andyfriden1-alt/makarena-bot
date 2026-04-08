@@ -44,6 +44,14 @@ const ROLE_ICONS = {
   MS: "\u{1F525}",
   RP: "\u{1F3F9}"
 };
+const DUNGEON_MARKERS = {
+  "20": "\u{1F7E2}",
+  "30": "\u{1F7E1}",
+  "40": "\u{1F7E0}",
+  "60": "\u{1F534}",
+  "90": "\u{1F535}",
+  "120": "\u{1F7E3}"
+};
 
 // ===== DATA =====
 const sessions = new Map();
@@ -301,7 +309,7 @@ async function buildEmbeds(session, guild) {
     }
 
     fields.push({
-      name: `Dungeon ${tier}`,
+      name: `${DUNGEON_MARKERS[tier] || "\u25AA"} Dungeon ${tier}`,
       value: groupBlocks.join("\n\n"),
       inline: true
     });

@@ -301,7 +301,7 @@ async function buildEmbeds(session, guild) {
         name: isGroupFull(session, key)
           ? `Group ${group} (${getGroupSize(session, key)}/4) - FULL`
           : `Group ${group} (${getGroupSize(session, key)}/4)`,
-        value: `${isGroupFull(session, key) ? "**READY TO GO**\n\n" : ""}**Party**\n${partyLines.join("\n")}`,
+        value: `${isGroupFull(session, key) ? "**READY**\n" : ""}${partyLines.join("\n")}`,
         inline: true
       });
     }

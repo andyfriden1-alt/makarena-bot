@@ -136,12 +136,6 @@ function isGroupFull(session, key) {
   return getGroupSize(session, key) === MAX_PLAYERS;
 }
 
-function getTierKeys(session, tier) {
-  return Object.keys(session)
-    .filter(key => key.split("-")[0] === tier)
-    .sort((a, b) => Number(a.split("-")[1]) - Number(b.split("-")[1]));
-}
-
 function getMemberSafe(guild, id) {
   return guild.members.cache.get(id) || null;
 }
@@ -262,75 +256,67 @@ async function refreshSessionMessage(messageId) {
 // ===== EMBEDS =====
 async function buildEmbeds(session, guild) {
   syncSessionStatusesFromGuild(session, guild);
+
   const tiers = Object.keys(dungeonCooldowns).sort((a, b) => Number(a) - Number(b));
-  const splitIndex = Math.ceil(tiers.length / 2);
-  const leftColumnTiers = tiers.slice(0, splitIndex);
-  const rightColumnTiers = tiers.slice(splitIndex);
-  const embeds = [];
+  const embed = new EmbedBuilder()
+    .setTitle("Party Finder")
+    .setColor(0x2b2d31)
+    .setTimestamp();
 
-  for (let row = 0; row < splitIndex; row += 1) {
-    const embed = new EmbedBuilder()
-      .setColor(0x2b2d31)
-      .setTimestamp();
+  const fields = [];
 
-    if (row === 0) {
-      embed.setTitle("Party Finder");
-    }
+  for (let index = 0; index < tiers.length; index += 1) {
+    const tier = tiers[index];
+    const tierKeys = Object.keys(session)
+      .filter(key => key.split("-")[0] === tier)
+      .sort((a, b) => Number(a.split("-")[1]) - Number(b.split("-")[1]));
 
-    const fields = [];
+    const groupBlocks = [];
 
-    for (const tier of [leftColumnTiers[row], rightColumnTiers[row]]) {
-      if (!tier) continue;
+    for (const key of tierKeys) {
+      const data = session[key];
+      const group = key.split("-")[1];
+      const partyLines = [];
 
-      const groupBlocks = [];
+      for (const role of ROLE_ORDER) {
+        const player = data.team[role];
 
-      for (const key of getTierKeys(session, tier)) {
-        const data = session[key];
-        const group = key.split("-")[1];
-        const partyLines = [];
-
-        for (const role of ROLE_ORDER) {
-          const player = data.team[role];
-
-          if (!player) {
-            partyLines.push(`${ROLE_ICONS[role]} -`);
-            continue;
-          }
-
-          const presence = await ensurePresenceForUser(guild, player.id);
-          const member = await getMemberSafe(guild, player.id);
-          const name = getPlayerName(player, member);
-          const status = getStatusIcon(presence, player.status);
-          const cooldown = formatCooldown(getCooldown(player.id, key));
-
-          partyLines.push(formatPlayerLine(ROLE_ICONS[role], name, status, cooldown));
+        if (!player) {
+          partyLines.push(`${ROLE_ICONS[role]} -`);
+          continue;
         }
 
-        groupBlocks.push(
-          `${isGroupFull(session, key) ? `**Group ${group} (${getGroupSize(session, key)}/4) - FULL**` : `**Group ${group} (${getGroupSize(session, key)}/4)**`}\n${isGroupFull(session, key) ? "**READY**\n" : ""}${partyLines.join("\n")}`
-        );
+        const presence = await ensurePresenceForUser(guild, player.id);
+        const member = await getMemberSafe(guild, player.id);
+        const name = getPlayerName(player, member);
+        const status = getStatusIcon(presence, player.status);
+        const cooldown = formatCooldown(getCooldown(player.id, key));
+
+        partyLines.push(formatPlayerLine(ROLE_ICONS[role], name, status, cooldown));
       }
 
-      fields.push({
-        name: `Dungeon ${tier}`,
-        value: groupBlocks.join("\n\n"),
-        inline: true
-      });
+      groupBlocks.push(
+        `${isGroupFull(session, key) ? `**Group ${group} (${getGroupSize(session, key)}/4) - FULL**` : `**Group ${group} (${getGroupSize(session, key)}/4)**`}\n${isGroupFull(session, key) ? "**READY**\n" : ""}${partyLines.join("\n")}`
+      );
     }
 
-    if (fields.length === 1) {
+    fields.push({
+      name: `Dungeon ${tier}`,
+      value: groupBlocks.join("\n\n"),
+      inline: true
+    });
+
+    if (index % 2 === 1 && index < tiers.length - 1) {
       fields.push({
         name: "\u200B",
         value: "\u200B",
-        inline: true
+        inline: false
       });
     }
-
-    embed.addFields(fields);
-    embeds.push(embed);
   }
 
-  return embeds;
+  embed.addFields(fields);
+  return [embed];
 }
 
 // ===== UI =====

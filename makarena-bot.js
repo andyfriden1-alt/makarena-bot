@@ -624,7 +624,7 @@ client.on("interactionCreate", async interaction => {
             return;
           }
 
-          delete session[sourceKey].team[moderationTarget.sourceRole];
+          removeUserFromDungeon(session, currentPlayer.id, moderationTarget.sourceDungeon);
           session[key].team[interaction.customId] = {
             ...currentPlayer,
             role: interaction.customId

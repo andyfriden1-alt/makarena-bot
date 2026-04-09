@@ -10,6 +10,10 @@
 
 const TOKEN = process.env.DISCORD_TOKEN || process.env.TOKEN;
 const enablePresenceIntent = process.env.DISCORD_ENABLE_PRESENCE_INTENT === "true";
+const OWNER_IDS = (process.env.BOT_OWNER_IDS || process.env.BOT_OWNER_ID || process.env.DISCORD_OWNER_ID || "")
+  .split(",")
+  .map(id => id.trim())
+  .filter(Boolean);
 const intents = [GatewayIntentBits.Guilds];
 
 if (enablePresenceIntent) {
@@ -75,6 +79,10 @@ function createEmptyDungeons() {
 
 function getSelectionKey(messageId, userId) {
   return `${messageId}:${userId}`;
+}
+
+function isBotOwner(userId) {
+  return OWNER_IDS.includes(userId);
 }
 
 function getPresenceStatus(presence, fallbackStatus) {
@@ -421,6 +429,7 @@ client.on("interactionCreate", async interaction => {
 
     if (interaction.isButton()) {
       const userId = interaction.user.id;
+      const ownerAction = isBotOwner(userId);
       const dungeon = selectedDungeon.get(selectionKey);
       const group = selectedGroup.get(selectionKey);
 
@@ -438,6 +447,21 @@ client.on("interactionCreate", async interaction => {
       } else {
         const existingPlayer = session[key].team[interaction.customId];
         if (existingPlayer && existingPlayer.id !== userId) {
+          if (ownerAction) {
+            const removedName = existingPlayer.displayName || existingPlayer.name;
+            delete session[key].team[interaction.customId];
+            console.log(
+              `[moderation] ${interaction.user.tag} removed ${removedName} from dungeon ${dungeon} group ${group} role ${interaction.customId}`
+            );
+            await sendInteractionNotice(
+              interaction,
+              `Removed ${removedName} from Dungeon ${dungeon}, Group ${group}, role ${interaction.customId}.`
+            );
+            shouldRefresh = true;
+            await refreshSessionMessage(messageId);
+            return;
+          }
+
           await sendInteractionNotice(interaction, "That role is already taken in this group.");
           return;
         }

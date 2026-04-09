@@ -4,6 +4,7 @@
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  PermissionsBitField,
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
   EmbedBuilder
@@ -85,6 +86,13 @@ function getSelectionKey(messageId, userId) {
 
 function isBotOwner(userId) {
   return OWNER_IDS.includes(userId);
+}
+
+function canModerate(interaction) {
+  if (isBotOwner(interaction.user.id)) return true;
+  if (interaction.guild?.ownerId === interaction.user.id) return true;
+  if (interaction.memberPermissions?.has(PermissionsBitField.Flags.Administrator)) return true;
+  return false;
 }
 
 function getModerationKey(messageId, userId) {
@@ -489,8 +497,8 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.customId === "owner_target") {
-        if (!isBotOwner(interaction.user.id)) {
-          await sendInteractionNotice(interaction, "Only configured bot owners can use that menu.");
+        if (!canModerate(interaction)) {
+          await sendInteractionNotice(interaction, "Only the bot owner, server owner, or an administrator can use that menu.");
           return;
         }
 
@@ -551,14 +559,14 @@ client.on("interactionCreate", async interaction => {
 
     if (interaction.isButton()) {
       const userId = interaction.user.id;
-      const ownerAction = isBotOwner(userId);
+      const ownerAction = canModerate(interaction);
       const dungeon = selectedDungeon.get(selectionKey);
       const group = selectedGroup.get(selectionKey);
       const moderationKey = getModerationKey(messageId, userId);
       const moderationTarget = selectedModerationTarget.get(moderationKey);
 
       if ((interaction.customId === "owner_remove" || interaction.customId === "owner_move") && !ownerAction) {
-        await sendInteractionNotice(interaction, "Only configured bot owners can use that button.");
+        await sendInteractionNotice(interaction, "Only the bot owner, server owner, or an administrator can use that button.");
         return;
       }
 

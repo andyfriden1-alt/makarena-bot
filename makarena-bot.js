@@ -5,6 +5,7 @@
   ButtonBuilder,
   ButtonStyle,
   StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
   EmbedBuilder
 } = require('discord.js');
 
@@ -92,6 +93,42 @@ function getModerationKey(messageId, userId) {
 
 function clearModerationState(messageId, userId) {
   selectedModerationTarget.delete(getModerationKey(messageId, userId));
+}
+
+function trimMenuText(text, maxLength = 100) {
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength - 3)}...`;
+}
+
+function getOccupiedSlots(session) {
+  return Object.keys(session)
+    .sort((a, b) => {
+      const [aDungeon, aGroup] = a.split("-").map(Number);
+      const [bDungeon, bGroup] = b.split("-").map(Number);
+      if (aDungeon !== bDungeon) return aDungeon - bDungeon;
+      return aGroup - bGroup;
+    })
+    .flatMap(key => {
+      const [dungeon, group] = key.split("-");
+      return ROLE_ORDER
+        .map(role => ({ key, dungeon, group, role, player: session[key].team[role] }))
+        .filter(entry => entry.player);
+    });
+}
+
+function buildModerationOptions(session) {
+  return getOccupiedSlots(session).slice(0, 25).map(entry =>
+    new StringSelectMenuOptionBuilder()
+      .setLabel(trimMenuText(entry.player.displayName || entry.player.name))
+      .setDescription(`Dungeon ${entry.dungeon} • Group ${entry.group} • Role ${entry.role}`)
+      .setValue(`${entry.dungeon}|${entry.group}|${entry.role}|${entry.player.id}`)
+  );
+}
+
+function parseModerationTarget(value) {
+  const [dungeon, group, role, userId] = value.split("|");
+  if (!dungeon || !group || !role || !userId) return null;
+  return { dungeon, group, role, userId };
 }
 
 function getPresenceStatus(presence, fallbackStatus) {
@@ -271,7 +308,7 @@ async function refreshSessionMessage(messageId) {
 
     await message.edit({
       embeds: await buildEmbeds(session, guild),
-      components: getComponents()
+      components: getComponents(session)
     });
   } catch (error) {
     console.error(`[session] Failed to refresh party finder ${messageId}:`, error);
@@ -345,7 +382,22 @@ async function buildEmbeds(session, guild) {
 }
 
 // ===== UI =====
-function getComponents() {
+function getComponents(session) {
+  const moderationOptions = buildModerationOptions(session);
+  const ownerTargetMenu = new StringSelectMenuBuilder()
+    .setCustomId("owner_target")
+    .setPlaceholder(moderationOptions.length > 0 ? "Owner: select player" : "No signed players yet")
+    .setDisabled(moderationOptions.length === 0)
+    .addOptions(
+      moderationOptions.length > 0
+        ? moderationOptions
+        : [
+            new StringSelectMenuOptionBuilder()
+              .setLabel("No signed players")
+              .setValue("none")
+          ]
+    );
+
   return [
     new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
@@ -369,6 +421,7 @@ function getComponents() {
           }))
         )
     ),
+    new ActionRowBuilder().addComponents(ownerTargetMenu),
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("EK").setLabel(ROLE_ICONS.EK).setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("ED").setLabel(ROLE_ICONS.ED).setStyle(ButtonStyle.Primary),
@@ -395,7 +448,7 @@ client.on("interactionCreate", async interaction => {
 
       const message = await interaction.reply({
         embeds: await buildEmbeds(data, interaction.guild),
-        components: getComponents(),
+        components: getComponents(data),
         fetchReply: true
       });
 
@@ -437,6 +490,64 @@ client.on("interactionCreate", async interaction => {
         console.log(`[interaction] ${interaction.user.tag} selected group ${interaction.values[0]} on ${messageId}`);
       }
 
+      if (interaction.customId === "owner_target") {
+        if (!isBotOwner(interaction.user.id)) {
+          await sendInteractionNotice(interaction, "Only configured bot owners can use that menu.");
+          return;
+        }
+
+        const moderationKey = getModerationKey(messageId, interaction.user.id);
+        const moderationTarget = selectedModerationTarget.get(moderationKey);
+        const parsedTarget = parseModerationTarget(interaction.values[0]);
+
+        if (!moderationTarget?.mode) {
+          await sendInteractionNotice(interaction, "Click Remove or Move first, then choose a player.");
+          return;
+        }
+
+        if (!parsedTarget) {
+          await sendInteractionNotice(interaction, "Could not read that player selection.");
+          return;
+        }
+
+        const targetKey = `${parsedTarget.dungeon}-${parsedTarget.group}`;
+        const currentPlayer = session[targetKey]?.team[parsedTarget.role];
+
+        if (!currentPlayer || currentPlayer.id !== parsedTarget.userId) {
+          clearModerationState(messageId, interaction.user.id);
+          await sendInteractionNotice(interaction, "That player is no longer in that slot. Try again.");
+          await refreshSessionMessage(messageId);
+          return;
+        }
+
+        if (moderationTarget.mode === "remove") {
+          delete session[targetKey].team[parsedTarget.role];
+          clearModerationState(messageId, interaction.user.id);
+          console.log(
+            `[moderation] ${interaction.user.tag} removed ${currentPlayer.displayName || currentPlayer.name} from dungeon ${parsedTarget.dungeon} group ${parsedTarget.group} role ${parsedTarget.role}`
+          );
+          await sendInteractionNotice(
+            interaction,
+            `Removed ${currentPlayer.displayName || currentPlayer.name} from Dungeon ${parsedTarget.dungeon}, Group ${parsedTarget.group}, role ${parsedTarget.role}.`
+          );
+          await refreshSessionMessage(messageId);
+          return;
+        }
+
+        selectedModerationTarget.set(moderationKey, {
+          ...moderationTarget,
+          userId: parsedTarget.userId,
+          sourceDungeon: parsedTarget.dungeon,
+          sourceGroup: parsedTarget.group,
+          sourceRole: parsedTarget.role
+        });
+        await sendInteractionNotice(
+          interaction,
+          `Selected ${currentPlayer.displayName || currentPlayer.name} from Dungeon ${parsedTarget.dungeon}, Group ${parsedTarget.group}, role ${parsedTarget.role}. Now choose destination dungeon/group and click the new role.`
+        );
+        return;
+      }
+
       return;
     }
 
@@ -454,22 +565,15 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.customId === "owner_remove" || interaction.customId === "owner_move") {
-        if (!dungeon || !group) {
-          await sendInteractionNotice(interaction, "Pick both dungeon and group first.");
-          return;
-        }
-
         selectedModerationTarget.set(moderationKey, {
-          mode: interaction.customId === "owner_remove" ? "remove" : "move",
-          dungeon,
-          group
+          mode: interaction.customId === "owner_remove" ? "remove" : "move"
         });
 
         await sendInteractionNotice(
           interaction,
           interaction.customId === "owner_remove"
-            ? `Remove mode active for Dungeon ${dungeon}, Group ${group}. Click an occupied role to remove that player.`
-            : `Move mode active for Dungeon ${dungeon}, Group ${group}. Click an occupied role to select the player, then click the new role.`
+            ? "Remove mode active. Choose a player in the owner menu to remove them."
+            : "Move mode active. Choose a player in the owner menu, then choose destination dungeon/group and click the new role."
         );
         return;
       }
@@ -489,81 +593,47 @@ client.on("interactionCreate", async interaction => {
       } else {
         const existingPlayer = session[key].team[interaction.customId];
 
-        if (ownerAction && moderationTarget && moderationTarget.dungeon === dungeon && moderationTarget.group === group) {
-          if (moderationTarget.mode === "remove") {
-            if (!existingPlayer) {
-              await sendInteractionNotice(interaction, "That role is already empty.");
-              return;
-            }
+        if (ownerAction && moderationTarget && moderationTarget.mode === "move" && moderationTarget.sourceRole) {
+          const sourceKey = `${moderationTarget.sourceDungeon}-${moderationTarget.sourceGroup}`;
+          const currentPlayer = session[sourceKey]?.team[moderationTarget.sourceRole];
 
-            delete session[key].team[interaction.customId];
+          if (!currentPlayer || currentPlayer.id !== moderationTarget.userId) {
             clearModerationState(messageId, userId);
-            console.log(
-              `[moderation] ${interaction.user.tag} removed ${existingPlayer.displayName || existingPlayer.name} from dungeon ${dungeon} group ${group} role ${interaction.customId}`
-            );
-            await sendInteractionNotice(
-              interaction,
-              `Removed ${existingPlayer.displayName || existingPlayer.name} from Dungeon ${dungeon}, Group ${group}, role ${interaction.customId}.`
-            );
-            shouldRefresh = true;
+            await sendInteractionNotice(interaction, "That player is no longer in the selected slot. Start move mode again.");
             await refreshSessionMessage(messageId);
             return;
           }
 
-          if (moderationTarget.mode === "move") {
-            if (!moderationTarget.sourceRole) {
-              if (!existingPlayer) {
-                await sendInteractionNotice(interaction, "That role is empty. Click an occupied role first.");
-                return;
-              }
-
-              selectedModerationTarget.set(moderationKey, {
-                ...moderationTarget,
-                sourceRole: interaction.customId,
-                userId: existingPlayer.id
-              });
-              await sendInteractionNotice(
-                interaction,
-                `Selected ${existingPlayer.displayName || existingPlayer.name} in role ${interaction.customId}. Click the new role to move them there.`
-              );
-              return;
-            }
-
-            const currentPlayer = session[key].team[moderationTarget.sourceRole];
-            if (!currentPlayer || currentPlayer.id !== moderationTarget.userId) {
-              clearModerationState(messageId, userId);
-              await sendInteractionNotice(interaction, "That player is no longer in the selected role. Start move mode again.");
-              await refreshSessionMessage(messageId);
-              return;
-            }
-
-            if (interaction.customId === moderationTarget.sourceRole) {
-              await sendInteractionNotice(interaction, "Pick a different role to move the player there.");
-              return;
-            }
-
-            if (existingPlayer && existingPlayer.id !== moderationTarget.userId) {
-              await sendInteractionNotice(interaction, "That target role is already taken.");
-              return;
-            }
-
-            delete session[key].team[moderationTarget.sourceRole];
-            session[key].team[interaction.customId] = {
-              ...currentPlayer,
-              role: interaction.customId
-            };
-            clearModerationState(messageId, userId);
-            console.log(
-              `[moderation] ${interaction.user.tag} moved ${currentPlayer.displayName || currentPlayer.name} from ${moderationTarget.sourceRole} to ${interaction.customId} in dungeon ${dungeon} group ${group}`
-            );
-            await sendInteractionNotice(
-              interaction,
-              `Moved ${currentPlayer.displayName || currentPlayer.name} to role ${interaction.customId} in Dungeon ${dungeon}, Group ${group}.`
-            );
-            shouldRefresh = true;
-            await refreshSessionMessage(messageId);
+          if (
+            dungeon === moderationTarget.sourceDungeon &&
+            group === moderationTarget.sourceGroup &&
+            interaction.customId === moderationTarget.sourceRole
+          ) {
+            await sendInteractionNotice(interaction, "Pick a different destination role.");
             return;
           }
+
+          if (existingPlayer && existingPlayer.id !== moderationTarget.userId) {
+            await sendInteractionNotice(interaction, "That target role is already taken.");
+            return;
+          }
+
+          delete session[sourceKey].team[moderationTarget.sourceRole];
+          session[key].team[interaction.customId] = {
+            ...currentPlayer,
+            role: interaction.customId
+          };
+          clearModerationState(messageId, userId);
+          console.log(
+            `[moderation] ${interaction.user.tag} moved ${currentPlayer.displayName || currentPlayer.name} from dungeon ${moderationTarget.sourceDungeon} group ${moderationTarget.sourceGroup} role ${moderationTarget.sourceRole} to dungeon ${dungeon} group ${group} role ${interaction.customId}`
+          );
+          await sendInteractionNotice(
+            interaction,
+            `Moved ${currentPlayer.displayName || currentPlayer.name} to Dungeon ${dungeon}, Group ${group}, role ${interaction.customId}.`
+          );
+          shouldRefresh = true;
+          await refreshSessionMessage(messageId);
+          return;
         }
 
         if (existingPlayer && existingPlayer.id !== userId) {

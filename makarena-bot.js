@@ -430,9 +430,7 @@ function getComponents(session) {
     ),
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("owner_remove").setLabel("Remove").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId("owner_move").setLabel("Move").setStyle(ButtonStyle.Secondary)
-    ),
-    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("owner_move").setLabel("Move").setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("leave").setLabel("Leave").setStyle(ButtonStyle.Danger)
     )
   ];
